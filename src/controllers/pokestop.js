@@ -12,8 +12,8 @@ class Pokestop extends Controller {
 		if (!data.gender) data.gender = -1
 		let query = `
 		select humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, invasion.template, invasion.distance, invasion.clean, invasion.ping from invasion
-		join humans on humans.id = invasion.id
-		where humans.enabled = 1 and
+		join humans on (humans.id = invasion.id and humans.current_profile_no = invasion.profile_no)
+		where humans.enabled = 1 and humans.admin_disable = false and
 		(invasion.grunt_type='${String(data.gruntType).toLowerCase()}' or invasion.grunt_type = 'everything') and
 		(invasion.gender = ${data.gender} or invasion.gender = 0)`
 
@@ -44,6 +44,7 @@ class Pokestop extends Controller {
 				group by humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, invasion.template, invasion.distance, invasion.clean, invasion.ping
 			`)
 		}
+		// this.log.silly(`${data.pokestop_id}: Query ${query}`)
 
 		let result = await this.db.raw(query)
 		if (!['pg', 'mysql'].includes(this.config.database.client)) {
@@ -64,10 +65,10 @@ class Pokestop extends Controller {
 	async handle(obj) {
 		let pregenerateTile = false
 		const data = obj
-		const minTth = this.config.general.monsterMinimumTimeTillHidden || 0
-		// const minTth = this.config.general.alertMinimumTime || 0
+		const minTth = this.config.general.alertMinimumTime || 0
 
 		try {
+			const logReference = data.pokestop_id
 			switch (this.config.geocoding.staticProvider.toLowerCase()) {
 				case 'tileservercache': {
 					pregenerateTile = true
@@ -107,7 +108,7 @@ class Pokestop extends Controller {
 
 			// Stop handling if it already disappeared or is about to go away
 			if (data.tth.firstDateWasLater || ((data.tth.hours * 3600) + (data.tth.minutes * 60) + data.tth.seconds) < minTth) {
-				this.log.debug(`${data.name} Invasion already disappeared or is about to go away in: ${data.tth.hours}:${data.tth.minutes}:${data.tth.seconds}`)
+				this.log.debug(`${data.pokestop_id} Invasion already disappeared or is about to go away in: ${data.tth.hours}:${data.tth.minutes}:${data.tth.seconds}`)
 				return []
 			}
 
@@ -146,26 +147,44 @@ class Pokestop extends Controller {
 
 			const whoCares = await this.invasionWhoCares(data)
 
-			this.log.info(`Invasion against ${data.gruntType} appeared and ${whoCares.length} humans cared.`)
+			if (whoCares.length) {
+				this.log.info(`${logReference}: Invasion of type ${data.gruntType} at ${data.pokestopName} appeared in areas (${data.matched}) and ${whoCares.length} humans cared.`)
+			} else {
+				this.log.verbose(`${logReference}: Invasion of type ${data.gruntType} at ${data.pokestopName} appeared in areas (${data.matched}) and ${whoCares.length} humans cared.`)
+			}
 
 			let discordCacheBad = true // assume the worst
 			whoCares.forEach((cares) => {
-				const { count } = this.getDiscordCache(cares.id)
-				if (count <= this.config.discord.limitAmount + 1) discordCacheBad = false // but if anyone cares and has not exceeded cache, go on
+				if (!this.isRateLimited(cares.id)) discordCacheBad = false
 			})
 
-			if (discordCacheBad) return []
+			if (discordCacheBad) {
+				whoCares.forEach((cares) => {
+					this.log.verbose(`${logReference}: Not creating invasion alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} ${cares.language} ${cares.template}`)
+				})
+
+				return []
+			}
 
 			const geoResult = await this.getAddress({ lat: data.latitude, lon: data.longitude })
 			const jobs = []
 
-			if (pregenerateTile) {
-				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL('pokestop', data)
+			if (pregenerateTile && this.config.geocoding.staticMapType.pokestop) {
+				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'pokestop', data, this.config.geocoding.staticMapType.pokestop)
+				this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 			}
 			data.staticmap = data.staticMap // deprecated
 
 			for (const cares of whoCares) {
-				const caresCache = this.getDiscordCache(cares.id).count
+				this.log.debug(`${logReference}: Creating invasion alert for ${cares.id} ${cares.name} ${cares.type} ${cares.language} ${cares.template}`, cares)
+
+				const rateLimitTtr = this.getRateLimitTimeToRelease(cares.id)
+				if (rateLimitTtr) {
+					this.log.verbose(`${logReference}: Not creating invasion alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} Time to release: ${rateLimitTtr}`)
+					// eslint-disable-next-line no-continue
+					continue
+				}
+				this.log.verbose(`${logReference}: Creating invasion alert for ${cares.type} ${cares.id} ${cares.name} ${cares.language} ${cares.template}`)
 
 				const language = cares.language || this.config.general.locale
 				const translator = this.translatorFactory.Translator(language)
@@ -181,6 +200,9 @@ class Pokestop extends Controller {
 						data.gruntName = translator.translate(gruntType.grunt)
 						data.gender = gruntType.gender
 						data.genderDataEng = this.GameData.utilData.genders[data.gender]
+						if (!data.genderDataEng) {
+							data.genderDataEng = { name: '', emoji: '' }
+						}
 						if (this.GameData.utilData.types[gruntType.type]) {
 							data.gruntTypeEmoji = translator.translate(this.GameData.utilData.types[gruntType.type].emoji)
 						}
@@ -248,16 +270,32 @@ class Pokestop extends Controller {
 					tths: data.tth.seconds,
 					confirmedTime: data.disappear_time_verified,
 					now: new Date(),
-					genderData: { name: translator.translate(data.genderDataEng.name), emoji: translator.translate(data.genderDataEng.emoji) },
+					genderData: data.genderDataEng ? { name: translator.translate(data.genderDataEng.name), emoji: translator.translate(data.genderDataEng.emoji) } : { name: '', emoji: '' },
 					areas: data.matched.map((area) => area.replace(/'/gi, '').replace(/ /gi, '-')).join(', '),
 				}
 
 				let [platform] = cares.type.split(':')
 				if (platform === 'webhook') platform = 'discord'
 
-				const mustache = this.getDts('invasion', platform, cares.template, language)
+				const mustache = this.getDts(logReference, 'invasion', platform, cares.template, language)
 				if (mustache) {
-					const message = JSON.parse(mustache(view, { data: { language } }))
+					let mustacheResult
+					let message
+					try {
+						mustacheResult = mustache(view, { data: { language } })
+					} catch (err) {
+						this.log.error(`${logReference}: Error generating mustache results for ${platform}/${cares.template}/${language}`, err, view)
+						// eslint-disable-next-line no-continue
+						continue
+					}
+					mustacheResult = await this.urlShorten(mustacheResult)
+					try {
+						message = JSON.parse(mustacheResult)
+					} catch (err) {
+						this.log.error(`${logReference}: Error JSON parsing mustache results ${mustacheResult}`, err)
+						// eslint-disable-next-line no-continue
+						continue
+					}
 
 					if (cares.ping) {
 						if (!message.content) {
@@ -269,24 +307,23 @@ class Pokestop extends Controller {
 					const work = {
 						lat: data.latitude.toString().substring(0, 8),
 						lon: data.longitude.toString().substring(0, 8),
-						message: caresCache === this.config.discord.limitAmount + 1 ? { content: `${translator.translate('You have reached the limit of')} ${this.config.discord.limitAmount} ${translator.translate('messages over')} ${this.config.discord.limitSec} ${translator.translate('seconds')}` } : message,
+						message,
 						target: cares.id,
 						type: cares.type,
 						name: cares.name,
 						tth: data.tth,
 						clean: cares.clean,
-						emoji: caresCache === this.config.discord.limitAmount + 1 ? [] : data.emoji,
+						emoji: data.emoji,
+						logReference,
+						language,
 					}
-					if (caresCache <= this.config.discord.limitAmount + 1) {
-						jobs.push(work)
-						this.addDiscordCache(cares.id)
-					}
+					jobs.push(work)
 				}
 			}
 
 			return jobs
 		} catch (e) {
-			this.log.error('Can\'t seem to handle pokestop: ', e, data)
+			this.log.error(`${data.pokestop_id}: Can't seem to handle pokestop: `, e, data)
 		}
 	}
 }

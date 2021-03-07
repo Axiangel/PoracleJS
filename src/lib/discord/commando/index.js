@@ -1,23 +1,23 @@
 const { Client } = require('discord.js')
-const Enmap = require('enmap')
 const fs = require('fs')
 const { S2 } = require('s2-geometry')
 const mustache = require('handlebars')
 const emojiStrip = require('emoji-strip')
 const hastebin = require('hastebin-gen')
-const Controller = require('../../../controllers/controller')
 
 class DiscordCommando {
-	constructor(knex, config, log, GameData, dts, geofence, translatorFactory) {
+	constructor(token, query, config, logs, GameData, dts, geofence, translatorFactory) {
+		this.token = token
 		this.config = config
-		this.query = new Controller(knex, config)
-		this.log = log
+		this.query = query
+		this.logs = logs
 		this.GameData = GameData
 		this.dts = dts
 		this.geofence = geofence
 		this.translatorFactory = translatorFactory
 		this.translator = translatorFactory.default
 		this.re = require('../../../util/regex')(this.translatorFactory)
+		this.id = '0'
 		this.bounceWorker()
 	}
 
@@ -27,15 +27,24 @@ class DiscordCommando {
 		try {
 			this.client.on('error', (err) => {
 				this.busy = true
-				this.log.error(`Discord worker #${this.id} \n bouncing`, err)
+				this.logs.log.error(`Discord worker #${this.id} \n bouncing`, err)
 				this.bounceWorker()
 			})
+			this.client.on('rateLimit', (info) => {
+				this.logs.log.warn(`#${this.id} Discord commando worker - will not be responding to commands -  429 rate limit hit - in timeout ${info.timeout ? info.timeout : 'Unknown timeout '} route ${info.route}`)
+			})
+			this.client.on('ready', () => {
+				this.logs.log.info(`#${this.id} Discord commando - ${this.client.user.tag} ready for action`)
+
+				this.busy = false
+			})
+
 			// We also need to make sure we're attaching the config to the CLIENT so it's accessible everywhere!
 			this.client.config = this.config
 			this.client.S2 = S2
 			this.client.query = this.query
 			this.client.emojiStrip = emojiStrip
-			this.client.log = this.log
+			this.client.logs = this.logs
 			this.client.dts = this.dts
 			this.client.re = this.re
 			this.client.geofence = this.geofence
@@ -55,7 +64,7 @@ class DiscordCommando {
 				})
 			})
 
-			this.client.commands = new Enmap()
+			this.client.commands = {}
 			const enabledCommands = []
 			fs.readdir(`${__dirname}/commands/`, (err, files) => {
 				if (err) return this.log.error(err)
@@ -64,7 +73,7 @@ class DiscordCommando {
 					const props = require(`${__dirname}/commands/${file}`) // eslint-disable-line global-require
 					const commandName = file.split('.')[0]
 					enabledCommands.push(`${this.config.discord.prefix}${commandName}`)
-					this.client.commands.set(commandName, props)
+					this.client.commands[commandName] = props
 				})
 
 				if (this.client.config.general.availableLanguages && !this.client.config.general.disabledCommands.includes('poracle')) {
@@ -73,18 +82,18 @@ class DiscordCommando {
 						if (commandName && !enabledCommands.includes(`${this.config.discord.prefix}${commandName}`)) {
 							const props = require(`${__dirname}/commands/poracle`)
 							enabledCommands.push(`${this.config.discord.prefix}${commandName}`)
-							this.client.commands.set(commandName, props)
+							this.client.commands[commandName] = props
 						}
 					}
 				}
 
-				this.log.info(`Discord commando loaded ${enabledCommands.join(', ')} commands`)
+				this.logs.log.info(`Discord commando loaded ${enabledCommands.join(', ')} commands`)
 			})
 
-			this.client.login(this.config.discord.token[0])
+			this.client.login(this.token)
 		} catch (err) {
-			this.log.error(`Discord commando didn't bounce, \n ${err.message} \n trying again`)
-			this.sleep(2000)
+			this.logs.log.error(`Discord commando didn't bounce, \n ${err.message} \n trying again`)
+			await this.sleep(2000)
 			return this.bounceWorker()
 		}
 	}

@@ -4,10 +4,12 @@ exports.run = async (client, msg, args) => {
 		const util = client.createUtil(msg, args)
 
 		const {
-			canContinue, target, language,
+			canContinue, target, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+
 		const translator = client.translatorFactory.Translator(language)
 
 		// Check target
@@ -40,6 +42,7 @@ exports.run = async (client, msg, args) => {
 				} else {
 					await msg.react('👌')
 				}
+				await client.query.updateQuery('profiles', { area: JSON.stringify(newAreas) }, { id: target.id, profile_no: currentProfileNo })
 
 				break
 			}
@@ -60,6 +63,7 @@ exports.run = async (client, msg, args) => {
 					await msg.react('👌')
 				}
 
+				await client.query.updateQuery('profiles', { area: JSON.stringify(newAreas) }, { id: target.id, profile_no: currentProfileNo })
 				break
 			}
 			case 'list': {
@@ -67,6 +71,9 @@ exports.run = async (client, msg, args) => {
 				break
 			}
 			default:
+				await msg.reply(translator.translateFormat('Valid commands are `{0}area list`, `{0}area add <areaname>`, `{0}area remove <areaname>`', util.prefix),
+					{ style: 'markdown' })
+				break
 		}
 	} catch (err) {
 		client.log.error(`area command ${msg.content} unhappy:`, err)

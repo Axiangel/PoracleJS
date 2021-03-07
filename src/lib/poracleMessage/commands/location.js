@@ -4,10 +4,12 @@ exports.run = async (client, msg, args) => {
 		const util = client.createUtil(msg, args)
 
 		const {
-			canContinue, target, language,
+			canContinue, target, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+
 		const translator = client.translatorFactory.Translator(language)
 
 		let platform = target.type.split(':')[0]
@@ -49,8 +51,8 @@ exports.run = async (client, msg, args) => {
 		const maplink = `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
 		message = `👋, ${translator.translate('I set ')}${target.name}${translator.translate('\'s location to the following coordinates in')}${placeConfirmation}:\n${maplink}`
 
-		if (platform === 'discord' && client.config.geocoding.staticProvider.toLowerCase() === 'tileservercache') {
-			staticMap = await client.query.tileserverPregen.getPregeneratedTileURL('location', { latitude: lat, longitude: lon })
+		if (platform === 'discord' && client.config.geocoding.staticMapType.location && client.config.geocoding.staticProvider.toLowerCase() === 'tileservercache') {
+			staticMap = await client.query.tileserverPregen.getPregeneratedTileURL('location', 'location', { latitude: lat, longitude: lon }, client.config.geocoding.staticMapType.location)
 			message = {
 				embed: {
 					color: 0x00ff00,
@@ -65,6 +67,8 @@ exports.run = async (client, msg, args) => {
 		}
 
 		await client.query.updateQuery('humans', { latitude: lat, longitude: lon }, { id: target.id })
+		await client.query.updateQuery('profiles', { latitude: lat, longitude: lon }, { id: target.id, profile_no: currentProfileNo })
+
 		await msg.reply(message)
 		await msg.react('✅')
 	} catch (err) {

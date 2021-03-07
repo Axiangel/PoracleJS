@@ -22,8 +22,8 @@ class Quest extends Controller {
 		})
 		let query = `
 		select humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, quest.distance, quest.clean, quest.ping, quest.template from quest
-		join humans on humans.id = quest.id
-		where humans.enabled = 1 and
+		join humans on (humans.id = quest.id and humans.current_profile_no = quest.profile_no)
+		where humans.enabled = 1 and humans.admin_disable = false and
 		(((reward_type=7 and reward in (${data.rewardData.monsters}) and shiny = 1 and ${data.isShiny}=1) or (reward_type=7 and reward in (${data.rewardData.monsters}) and shiny = 0))
 		or (reward_type = 2 and reward in (${data.rewardData.items}))
 		or (reward_type = 3 and reward <= ${data.dustAmount})
@@ -58,6 +58,7 @@ class Quest extends Controller {
 			`)
 		}
 
+		// this.log.silly(`${data.pokestop_id}: Query ${query}`)
 		let result = await this.db.raw(query)
 		if (!['pg', 'mysql'].includes(this.config.database.client)) {
 			result = result.filter((res) => +res.distance === 0 || +res.distance > 0 && +res.distance > this.getDistance({ lat: res.latitude, lon: res.longitude }, { lat: data.latitude, lon: data.longitude }))
@@ -80,6 +81,7 @@ class Quest extends Controller {
 		const minTth = this.config.general.alertMinimumTime || 0
 
 		try {
+			const logReference = data.pokestop_id
 			switch (this.config.geocoding.staticProvider.toLowerCase()) {
 				case 'tileservercache': {
 					pregenerateTile = true
@@ -119,7 +121,7 @@ class Quest extends Controller {
 			}
 			if (data.pokestop_url) data.pokestopUrl = data.pokestop_url
 			if (data.tth.firstDateWasLater || ((data.tth.hours * 3600) + (data.tth.minutes * 60) + data.tth.seconds) < minTth) {
-				log.debug(`quest ${data.name} already disappeared or is about to expire in: ${data.tth.hours}:${data.tth.minutes}:${data.tth.seconds}`)
+				log.debug(`${data.pokestop_id}: quest already disappeared or is about to expire in: ${data.tth.hours}:${data.tth.minutes}:${data.tth.seconds}`)
 				return []
 			}
 
@@ -157,27 +159,47 @@ class Quest extends Controller {
 			}
 
 			const whoCares = await this.questWhoCares(data)
+			if (whoCares.length) {
+				this.log.info(`${logReference}: Quest appeared in areas (${data.matched}) and ${whoCares.length} humans cared.`)
+			} else {
+				this.log.verbose(`${logReference}: Quest appeared in areas (${data.matched}) and ${whoCares.length} humans cared.`)
+			}
 
 			if (!whoCares[0]) return []
 
 			let discordCacheBad = true // assume the worst
 			whoCares.forEach((cares) => {
-				const { count } = this.getDiscordCache(cares.id)
-				if (count <= this.config.discord.limitAmount + 1) discordCacheBad = false // but if anyone cares and has not exceeded cache, go on
+				if (!this.isRateLimited(cares.id)) discordCacheBad = false
 			})
 
-			if (discordCacheBad) return []
+			if (discordCacheBad) {
+				whoCares.forEach((cares) => {
+					this.log.verbose(`${logReference}: Not creating quest alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} ${cares.language} ${cares.template}`)
+				})
+
+				return []
+			}
 
 			const geoResult = await this.getAddress({ lat: data.latitude, lon: data.longitude })
 			const jobs = []
 
-			if (pregenerateTile) {
-				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL('quest', data)
+			if (pregenerateTile && this.config.geocoding.staticMapType.quest) {
+				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'quest', data, this.config.geocoding.staticMapType.quest)
+				this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 			}
+
 			data.staticmap = data.staticMap // deprecated
 
 			for (const cares of whoCares) {
-				const caresCache = this.getDiscordCache(cares.id).count
+				this.log.debug(`${logReference}: Creating quest alert for ${cares.id} ${cares.name} ${cares.type} ${cares.language} ${cares.template}`, cares)
+
+				const rateLimitTtr = this.getRateLimitTimeToRelease(cares.id)
+				if (rateLimitTtr) {
+					this.log.verbose(`${logReference}: Not creating quest alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} Time to release: ${rateLimitTtr}`)
+					// eslint-disable-next-line no-continue
+					continue
+				}
+				this.log.verbose(`${logReference}: Creating quest alert for ${cares.type} ${cares.id} ${cares.name} ${cares.language} ${cares.template}`)
 
 				const language = cares.language || this.config.general.locale
 				const translator = this.translatorFactory.Translator(language)
@@ -210,9 +232,25 @@ class Quest extends Controller {
 				let [platform] = cares.type.split(':')
 				if (platform == 'webhook') platform = 'discord'
 
-				const mustache = this.getDts('quest', platform, cares.template, language)
+				const mustache = this.getDts(logReference, 'quest', platform, cares.template, language)
 				if (mustache) {
-					const message = JSON.parse(mustache(view, { data: { language } }))
+					let mustacheResult
+					let message
+					try {
+						mustacheResult = mustache(view, { data: { language } })
+					} catch (err) {
+						this.log.error(`${logReference}: Error generating mustache results for ${platform}/${cares.template}/${language}`, err, view)
+						// eslint-disable-next-line no-continue
+						continue
+					}
+					mustacheResult = await this.urlShorten(mustacheResult)
+					try {
+						message = JSON.parse(mustacheResult)
+					} catch (err) {
+						this.log.error(`${logReference}: Error JSON parsing mustache results ${mustacheResult}`, err)
+						// eslint-disable-next-line no-continue
+						continue
+					}
 
 					if (cares.ping) {
 						if (!message.content) {
@@ -225,23 +263,22 @@ class Quest extends Controller {
 					const work = {
 						lat: data.latitude.toString().substring(0, 8),
 						lon: data.longitude.toString().substring(0, 8),
-						message: caresCache === this.config.discord.limitAmount + 1 ? { content: `${translator.translate('You have reached the limit of')} ${this.config.discord.limitAmount} ${translator.translate('messages over')} ${this.config.discord.limitSec} ${translator.translate('seconds')}` } : message,
+						message,
 						target: cares.id,
 						type: cares.type,
 						name: cares.name,
 						tth: data.tth,
 						clean: cares.clean,
+						logReference,
+						language,
 					}
-					if (caresCache <= this.config.discord.limitAmount + 1) {
-						jobs.push(work)
-						this.addDiscordCache(cares.id)
-					}
+					jobs.push(work)
 				}
 			}
 
 			return jobs
 		} catch (e) {
-			this.log.error('Can\'t seem to handle quest: ', e, data)
+			this.log.error(`${data.pokestop_id}: Can't seem to handle quest: `, e, data)
 		}
 	}
 

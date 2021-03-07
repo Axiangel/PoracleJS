@@ -3,10 +3,12 @@ exports.run = async (client, msg, args) => {
 		const util = client.createUtil(msg, args)
 
 		const {
-			canContinue, target, userHasLocation, userHasArea, language,
+			canContinue, target, userHasLocation, userHasArea, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+
 		const translator = client.translatorFactory.Translator(language)
 
 		let reaction = '👌'
@@ -17,7 +19,7 @@ exports.run = async (client, msg, args) => {
 		let exclusive = 0
 		let distance = 0
 		let team = 4
-		let template = 1
+		let template = client.config.general.defaultTemplateName
 		let clean = false
 		let levels = []
 		const pings = msg.getPings()
@@ -27,10 +29,10 @@ exports.run = async (client, msg, args) => {
 			else if (element.match(client.re.levelRe)) levels.push(element.match(client.re.levelRe)[2])
 			else if (element.match(client.re.templateRe)) [,, template] = element.match(client.re.templateRe)
 			else if (element.match(client.re.dRe)) [,, distance] = element.match(client.re.dRe)
-			else if (element === 'instinct') team = 3
-			else if (element === 'valor') team = 2
-			else if (element === 'mystic') team = 1
-			else if (element === 'harmony') team = 0
+			else if (element === 'instinct' || element === 'yellow') team = 3
+			else if (element === 'valor' || element === 'red') team = 2
+			else if (element === 'mystic' || element === 'blue') team = 1
+			else if (element === 'harmony' || element === 'gray') team = 0
 			else if (element === 'everything') levels = [1, 2, 3, 4, 5, 6]
 			else if (element === 'clean') clean = true
 		})
@@ -52,6 +54,7 @@ exports.run = async (client, msg, args) => {
 		if (!remove) {
 			const insert = levels.map((lvl) => ({
 				id: target.id,
+				profile_no: currentProfileNo,
 				ping: pings,
 				exclusive: !!exclusive,
 				template,
@@ -68,12 +71,18 @@ exports.run = async (client, msg, args) => {
 		} else {
 			let result = 0
 			if (levels.length) {
-				const lvlResult = await client.query.deleteWhereInQuery('egg', target.id, levels, 'level')
+				const lvlResult = await client.query.deleteWhereInQuery('egg', {
+					id: target.id,
+					profile_no: currentProfileNo,
+				}, levels, 'level')
 				client.log.info(`${target.name} stopped tracking level ${levels.join(', ')} eggs`)
 				result += lvlResult
 			}
 			if (commandEverything) {
-				const everythingResult = await client.query.deleteQuery('egg', { id: target.id })
+				const everythingResult = await client.query.deleteQuery('egg', {
+					id: target.id,
+					profile_no: currentProfileNo,
+				})
 				client.log.info(`${target.name} stopped tracking all eggs`)
 				result += everythingResult
 			}

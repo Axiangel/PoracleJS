@@ -1,8 +1,10 @@
-logs/*.json
+logs/*
 config/*.json
+config/customMaps/*
 config/dts/*.json
 config/locale/*.json
 docker-compose.yml
+.cache/*
 .idea
 .vscode
 

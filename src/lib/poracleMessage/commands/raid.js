@@ -4,10 +4,12 @@ exports.run = async (client, msg, args) => {
 		const util = client.createUtil(msg, args)
 
 		const {
-			canContinue, target, userHasLocation, userHasArea, language,
+			canContinue, target, userHasLocation, userHasArea, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+
 		const translator = client.translatorFactory.Translator(language)
 
 		const typeArray = Object.keys(client.GameData.utilData.types).map((o) => o.toLowerCase())
@@ -21,11 +23,11 @@ exports.run = async (client, msg, args) => {
 		let exclusive = 0
 		let distance = 0
 		let team = 4
-		let template = 1
+		let template = client.config.general.defaultTemplateName
 		let clean = false
 		let levels = []
 		const pings = msg.getPings()
-		const formNames = args.filter((arg) => arg.match(client.re.formRe)).map((arg) => arg.match(client.re.formRe)[2])
+		const formNames = args.filter((arg) => arg.match(client.re.formRe)).map((arg) => client.translatorFactory.reverseTranslateCommand(arg.match(client.re.formRe)[2], true).toLowerCase())
 		const argTypes = args.filter((arg) => typeArray.includes(arg))
 
 		if (formNames.length) {
@@ -49,10 +51,10 @@ exports.run = async (client, msg, args) => {
 			else if (element.match(client.re.levelRe)) levels.push(element.match(client.re.levelRe)[2])
 			else if (element.match(client.re.templateRe)) [,, template] = element.match(client.re.templateRe)
 			else if (element.match(client.re.dRe)) [,, distance] = element.match(client.re.dRe)
-			else if (element === 'instinct') team = 3
-			else if (element === 'valor') team = 2
-			else if (element === 'mystic') team = 1
-			else if (element === 'harmony') team = 0
+			else if (element === 'instinct' || element === 'yellow') team = 3
+			else if (element === 'valor' || element === 'red') team = 2
+			else if (element === 'mystic' || element === 'blue') team = 1
+			else if (element === 'harmony' || element === 'gray') team = 0
 			else if (element === 'everything' && !formNames.length) levels = [1, 2, 3, 4, 5, 6]
 			else if (element === 'clean') clean = true
 		})
@@ -73,6 +75,7 @@ exports.run = async (client, msg, args) => {
 		if (!remove) {
 			const insert = monsters.map((mon) => ({
 				id: target.id,
+				profile_no: currentProfileNo,
 				pokemon_id: mon.id,
 				ping: pings,
 				exclusive: !!exclusive,
@@ -87,6 +90,7 @@ exports.run = async (client, msg, args) => {
 			levels.forEach((level) => {
 				insert.push({
 					id: target.id,
+					profile_no: currentProfileNo,
 					pokemon_id: 9000,
 					ping: pings,
 					exclusive: !!exclusive,
@@ -106,16 +110,22 @@ exports.run = async (client, msg, args) => {
 			const monsterIds = monsters.map((mon) => mon.id)
 			let result = 0
 			if (monsterIds.length) {
-				const monResult = await client.query.deleteWhereInQuery('raid', target.id, monsterIds, 'pokemon_id')
+				const monResult = await client.query.deleteWhereInQuery('raid', {
+					id: target.id,
+					profile_no: currentProfileNo,
+				}, monsterIds, 'pokemon_id')
 				result += monResult
 			}
 			if (levels.length) {
-				const lvlResult = await client.query.deleteWhereInQuery('raid', target.id, levels, 'level')
+				const lvlResult = await client.query.deleteWhereInQuery('raid', {
+					id: target.id,
+					profile_no: currentProfileNo,
+				}, levels, 'level')
 				client.log.info(`${target.name} stopped tracking level ${levels.join(', ')} raids`)
 				result += lvlResult
 			}
 			if (commandEverything) {
-				const everythingResult = await client.query.deleteQuery('raid', { id: target.id })
+				const everythingResult = await client.query.deleteQuery('raid', { id: target.id, profile_no: currentProfileNo })
 				client.log.info(`${target.name} stopped tracking all raids`)
 				result += everythingResult
 			}

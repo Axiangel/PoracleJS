@@ -324,6 +324,8 @@ function Add_Missing_Pokemon() {
 	// Remove missing Diancie and Volcanion
 	delete GameMaster.pokemon['719_0']
 	delete GameMaster.pokemon['721_0']
+	// set proper form name for Armored Mewtwo
+	if (GameMaster.pokemon['150_133'].form.name === "A") GameMaster.pokemon['150_133'].form.name = "Armored"
 }
 
 (async function () {
@@ -408,6 +410,7 @@ function Add_Missing_Pokemon() {
 				.replace('_MALE', '')
 				.replace('_FEMALE', '')),
 		}
+		if (updatedGruntData[gruntId].type === "Grunt") updatedGruntData[gruntId].type = "Mixed"
 		if (gruntData[gruntId].lineup) {
 			updatedGruntData[gruntId].second_reward = !!(gruntData[gruntId].lineup && gruntData[gruntId].lineup.rewards.length > 1)
 			updatedGruntData[gruntId].encounters = {
