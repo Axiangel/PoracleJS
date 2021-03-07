@@ -48,7 +48,7 @@
 "and":"och",
 "any":"alla",
 "area":"område",
-"blue":"blå"
+"blue":"blå",
 "channel":"kanal",
 "clean":"städa",
 "controlled by":"kontrollerad av",
@@ -91,5 +91,5 @@
 "weather":"väder",
 "webhook":"webhook",
 "with":"med",
-"yellow":"gul",
+"yellow":"gul"
 }
